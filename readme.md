@@ -1,81 +1,61 @@
-# _LazyPig
+# AuldLangSyne
 
-A quality-of-life automation addon — auto-accept, auto-roll, auto-dismount, chat/spam filtering, and related conveniences.
+A FuBar plugin that tracks your friends' and guildmates' class, race, level, and notes, and reports who's logged in.
 
 ## Client mods used
 
-**None.** Checked two candidates specifically for this addon and neither applies:
-
-- **ClassicAPI's `UnitIsInMyGuild`** — looked like a natural replacement for the addon's own `GetGuildMemberInfo`-based roster scan, but its own documentation confirms that for a **literal name string** (not a resolved unit token) it falls back to walking the same engine guild-roster array `GetGuildRosterInfo` already uses. LazyPig checks guild membership from parsed chat/invite names, not from live unit tokens, so this wouldn't have been faster — not used.
-- **WeirdUtils' `string.find`/`gsub`/`gfind` literal prefilter** — plausibly helps, since this addon does a fair amount of chat-text pattern matching, but it's an engine-level optimization that works transparently if a user has `weirdperformance.dll` installed — there's nothing for LazyPig's own code to call or depend on either way. Not a dependency, not integrated, just complementary if present.
-
-No feature in this update requires any client mod to be installed.
+**None.** This update's only functional change is to a bundled shared library (`AceEvent-2.0`), which is pure internal Lua — no external client mod dependency, and nothing here requires one to be installed.
 
 ## Features
 
-- Auto Dismount
-- Auto Stance
-- Extended camera distance (optional)
-- Auto-accept invites — separately toggleable for guild members, friends, and strangers; can be disabled while in a battleground or its queue
-- Auto-accept summons
-- Auto battleground: auto-join, auto-leave, auto-queue, auto-release spirit in BG
-- Auto-decline quest sharing while in a battleground (optional)
-- Announce when queueing for a battleground as party leader (optional)
-- Position the loot frame at the cursor (optional)
-- Improved right-click (optional)
-- Auto-roll: green items, ZG coins/bijou, MC mats, AQ scarabs/idols, corrupted sand, Dream Shards, Naxx scraps — each independently configurable
-- Auto-roll chat messages (optional)
-- Auto-cancel duels (optional)
-- Special key-combination actions
-- Mute World chat — while in dungeons, while in a raid, while in a battleground, or always (each independently toggleable)
-- Hide player spam messages (duplicate-text filter across Say/Channel/Yell/Emote)
-- Hide green/blue item-roll messages (independently toggleable)
-- Improved stack-splitting with Shift
-- Auto-accept resurrection in raid/dungeon/BG, if the resurrecter is out of combat
-- Auto-process gossip dialogs
-- Auto-remove Blessing of Salvation (configurable: off, always, or tank-only)
-- Auto-remove mana buffs (Blessing of Wisdom, Arcane Intellect, Prayer of Spirit)
-- Dedicated keybinds: Logout, Unstuck, Reload UI, target WSG EFC/cancel duel, drop WSG flag/remove Slow Fall, open the LazyPig menu
-- `/lp` for in-game options
+- Tracks class, race, level, PvP rank (with optional numeric rank), and guild membership for friends and guildmates, learned passively from login broadcasts, `/who` results, and tooltip hovers
+- Color-codes names by class and/or gender (independently toggleable)
+- Compact friends-list display mode, with an option to show levels in compact mode
+- Shows a player's saved note in their tooltip, on logon, and when you `/who` them (each independently toggleable)
+- Data management: clear stored data, dump stored data to chat, import notes from `CT_PlayerNotes`
+- Backup: save and restore a snapshot of your friends list
+- Minimap icon (standard FuBar plugin behavior), can be hidden
+- `/who`-result and guild-roster note display integration
 
 ## New features in this update
 
-**None.** This update is fixes and internal performance improvements only — no new user-facing feature was added. (If you'd like one added, say the word — happy to scope something out.)
+**None.** This update is a performance fix and a data-completeness improvement to existing features — no new user-facing feature was added.
 
 ## What changed — performance
 
-1. **`IsGuildMate()` recomputed `string.lower(name)` on every single roster entry** instead of once before the scan loop. Hoisted out.
-2. **The invite-accept check could call `IsGuildMate()`/`IsFriend()` up to twice each** for the same name within one expression — both full list scans. Now cached in locals, computed once.
-3. **Two full buff-bar scans ran on every `PLAYER_AURAS_CHANGED` event** (frequent in combat) — `LazyPig_CheckSalvation()` and `LazyPig_CheckManaBuffs()` each independently walked the whole player buff bar. Merged into a single `LazyPig_CheckBuffs()` that scans once and checks both buff lists per entry. Verified against 7 mock-buff-bar scenarios (including an `untilCancelled` buff that must be skipped): identical cancel/message outcome in every case, roughly half the API calls when both features are active.
+**The bundled `AceEvent-2.0` library's scheduler walked its entire timer registry on every single rendered frame, unconditionally** — even when nothing was due for seconds. This is the same class of bug found and fixed in a different addon's bundled copy of the same library; this one is an older, differently-structured revision (14125, manual `next()` iteration rather than `pairs()`+copy), so the fix was re-derived for this specific code shape.
 
-## What changed — bug fix
+- Tracks the earliest due time; `OnUpdate` skips the walk entirely until then.
+- Recomputed after each walk and on every new scheduled event.
+- Minor version bumped (14125 → 14126) so this patched copy wins `AceLibrary`'s version arbitration over the unpatched original.
 
-**Spam filter was only ever exempting guildmates/friends from `CHAT_MSG_EMOTE`, never Say/Channel/Yell.** Lua's `and` binds tighter than `or`, so:
-```lua
-... (event == "CHAT_MSG_SAY" or event == "CHAT_MSG_CHANNEL" or event == "CHAT_MSG_YELL" or event == "CHAT_MSG_EMOTE" and not (IsGuildMate(arg2) or IsFriend(arg2)))
-```
-only ever applied the `not (IsGuildMate or IsFriend)` exemption to the last clause (`CHAT_MSG_EMOTE`). A guildmate's or friend's Say/Channel/Yell message could get hidden as spam if someone else happened to post identical text within 70 seconds. Fixed by parenthesizing so the exemption applies consistently across all four message types:
-```lua
-... (event == "CHAT_MSG_SAY" or event == "CHAT_MSG_CHANNEL" or event == "CHAT_MSG_YELL" or event == "CHAT_MSG_EMOTE") and not (IsGuildMate(arg2) or IsFriend(arg2))
-```
-Verified across every event × guildmate × friend combination: `CHAT_MSG_EMOTE` behavior is unchanged (it was already correct); only Say/Channel/Yell from a guildmate-or-friend changes, now correctly exempted to match Emote's existing behavior.
+**Why this matters beyond this one addon:** `AceLibrary` is a singleton system — whichever loaded copy of `AceEvent-2.0` has the highest version number becomes the *only* active instance for every addon using it, not just this one.
+
+**Verified:** simulated 2 minutes of scheduled events (150 one-shots, two repeaters, a mid-run cancellation, a callback that schedules a new event). Identical event-firing set between original and patched; registry walk count cut from 7,200 to 362 — a 95% reduction.
+
+## What changed — data completeness
+
+Two small additions that close a gap the addon's own source flags with a comment: *"Right now offline friends that have never been seen by the addon look out of place, for they are not getting munged. Fix?"*
+
+1. **`ScanTooltip` now also captures class and level** (`UnitClass`, `UnitLevel`) — both free native calls it was already positioned to make alongside the race/PvP-rank/guild info it already captured. A single tooltip hover is now enough to fully decorate a friend's row from then on.
+2. **Optional backfill from ClassicAPI's `C_PlayerCache`**, if installed and opted into: a persistent, realm-shared player-name cache that can supply class/race/sex for a friend even if *this character* has never personally interacted with them. Fully optional — detected at runtime, silent no-op without it. Never overwrites data already known. Does not and cannot backfill level (not part of the name-cache protocol), so this alone won't fully "munge" a friend with zero other data — combined with the tooltip fix above, one hover covers the rest.
+
+**Verified:** 5 scenarios against a mock cache — no ClassicAPI present, player not cached, an already-complete entry (confirmed not overwritten), a partial entry (confirmed only gaps filled), and no prior entry at all, the real target case (confirmed created and filled, with level correctly left nil).
 
 ## Checked and found clean (full regression pass)
 
-- Every `OnUpdate` across all three Lua files — the main automation loop is throttled to 10Hz and all its queued-action tables are small and user-action-bounded, not combat/raid-scaling.
-- `ChatSpamClean()` — a properly double-buffered, bounded cleanup, not a leak.
-- Searched systematically for other instances of the same operator-precedence bug — none found; it was an isolated case.
-- One item flagged but **not** changed, pending your confirmation of intent: `ScheduleButtonClick`'s queue processor silently drops (rather than defers) a pending scheduled click if a shared cooldown happens to be active when it runs. Could be an oversight, could be deliberate — Lua's grammar doesn't make this one unambiguous the way the spam-filter bug was.
+Every other `OnUpdate` across the addon and its 10 bundled libraries (`AceAddon`, `AceConsole`, `AceDB`, `AceDebug`, `AceHook`, `AceLibrary`, `AceLocale`, `AceOO`, `Babble-Class`, `Deformat`, `Dewdrop`, `FuBarPlugin`, `Tablet`) — the addon's own display functions are bounded by small Blizzard UI constants and gated behind the Friends panel being open; library timers are self-terminating or gated behind a specific UI interaction (menu open, tooltip shown, drag in progress). This addon doesn't do anything during combat or raiding at all.
 
 ## Verification
 
-- Syntax-checked (`luac5.1 -p`) — clean.
-- All behavioral claims above verified by simulation against the actual extracted/patched code, not just reasoning by eye.
-- Patch reapplies to a clean copy of the original and reproduces the shipped file exactly, byte for byte.
+- Both changed files (`AuldLangSyne.lua`, `lib/AceEvent/AceEvent-2.0.lua`) syntax-checked (`luac5.1 -p`) — clean.
+- Scheduler fix and data-backfill fix both verified by simulation, see above.
+- Patch reapplies to a clean copy of the originals and reproduces the shipped files exactly, byte for byte.
 - Not tested in a live client.
 
 ## Files changed
 
 ```
-LazyPig.lua   (only file touched)
+AuldLangSyne.lua
+lib/AceEvent/AceEvent-2.0.lua
 ```
