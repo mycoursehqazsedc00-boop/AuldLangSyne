@@ -212,7 +212,7 @@ function AuldLangSyne:OnInitialize()
 		local v,_
 		if self.db.realm.version then
 			-- We rely on the version being of the form x.x.svn_rev
-			_,_,v = string.find(self.db.realm.version, "%d+\.%d+\.(%d+)")
+			_,_,v = string.find(self.db.realm.version, "%d+%.%d+%.(%d+)")
 			v = tonumber(v)
 		end
 
@@ -234,9 +234,8 @@ function AuldLangSyne:OnInitialize()
 
 	self.db.realm.version = self.version
 
-	--Stolen from AceDB.
-	local _,race = UnitRace("player")
-	if race == "Orc" or race == "Scourge" or race == "Troll" or race == "Tauren" then
+	local englishFaction = UnitFactionGroup("player")
+	if englishFaction == "Horde" then
 		self.faction = "0"
 	else
 		self.faction = "1"
@@ -273,16 +272,17 @@ function AuldLangSyne:CHAT_MSG_SYSTEM(message)
 	if self.listeningForLogin then
 		local name = deformat(message, ERR_FRIEND_ONLINE_SS)
 		if name and self.db.realm.chars[name] and self.db.realm.chars[name].note then
+			local note = self.db.realm.chars[name].note
 			--We schedule an event, so we can print the note _after_ the "[name] has come online" message.
-			self:ScheduleEvent(self.name.."PrintNote", function()
-					self:Print(name .. ": " .. self.db.realm.chars[name].note)
+			self:ScheduleEvent(self.name.."PrintNote_"..name, function()
+					self:Print(name .. ": " .. note)
 				end, 0.1)
 		end
 	end
 	if self.listeningForWho then
 		--local name = deformat(message, WHO_LIST_GUILD_FORMAT) or deformat(message, WHO_LIST_FORMAT)
 		local _, name, level, race, class, guild, location = deformat(message, WHO_LIST_GUILD_FORMAT)
-		if not name then _, name, level, race, class, location = deformat(message, WHO_LIST_GUILD_FORMAT) end
+		if not name then _, name, level, race, class, location = deformat(message, WHO_LIST_FORMAT) end
 		if name and self.db.realm.chars[name] ~= nil then
 			self:Debug("We know", name)
 			if guild then self.db.realm.chars[name].guild = guild end
@@ -291,8 +291,9 @@ function AuldLangSyne:CHAT_MSG_SYSTEM(message)
 			self.db.realm.chars[name].class = class
 			self.db.realm.chars[name].updated = time()
 			if self.db.profile.show.onwho and self.db.realm.chars[name].note then
-				self:ScheduleEvent(self.name.."PrintNote", function()
-						self:Print(name .. ": " .. self.db.realm.chars[name].note)
+				local note = self.db.realm.chars[name].note
+				self:ScheduleEvent(self.name.."PrintNote_"..name, function()
+						self:Print(name .. ": " .. note)
 					end, 0.1)
 			end
 		end
@@ -302,13 +303,15 @@ end
 function AuldLangSyne:ListenFor(which, stop)
 	if stop then
 		self["listeningFor"..which] = false
-		if self:IsEventRegistered("CHAT_MSG_SYSTEM") then
+		if not self.listeningForLogin and not self.listeningForWho and self:IsEventRegistered("CHAT_MSG_SYSTEM") then
 			self:UnregisterEvent("CHAT_MSG_SYSTEM")
 		end
 	else
 		self["listeningFor"..which] = true
-		self:RegisterEvent("CHAT_MSG_SYSTEM")
-		self:ScheduleEvent(self.ListenFor, 1, self, which, true)
+		if not self:IsEventRegistered("CHAT_MSG_SYSTEM") then
+			self:RegisterEvent("CHAT_MSG_SYSTEM")
+		end
+		self:ScheduleEvent("AuldLangSyne_Listen_"..which, self.ListenFor, 1, self, which, true)
 	end
 end
 
@@ -331,28 +334,40 @@ function AuldLangSyne:ShowFriends()
 
 			-- They need a note button.
 			self.friendbuttons[i].name = name
-			if self.db.realm.chars[name] == nil or self.db.realm.chars[name].note == "" or self.db.realm.chars[name].note == nil then
+			if (not name) or self.db.realm.chars[name] == nil or self.db.realm.chars[name].note == "" or self.db.realm.chars[name].note == nil then
 				self.friendbuttons[i]:GetNormalTexture():SetVertexColor(0.5,0.5,0.5)
 			else
 				self.friendbuttons[i]:GetNormalTexture():SetVertexColor(1,1,1)
 			end
 
-			self:FillFromPlayerCache(name)
+			if name then
+				self:FillFromPlayerCache(name)
+			end
 
 			-- Do we know anything about them?
-			if self.db.realm.chars[name] and self.db.realm.chars[name].level then
+			if name and self.db.realm.chars[name] and self.db.realm.chars[name].level then
 				self:Debug("Munging "..name)
 				local nameLocationText = getglobal("FriendsFrameFriendButton"..(i).."ButtonTextNameLocation");
 				local infoText = getglobal("FriendsFrameFriendButton"..(i).."ButtonTextInfo");
 
 				local race = self.db.realm.chars[name].race and (self.db.realm.chars[name].race.." ") or ""
-				local rank = (self.db.realm.chars[name].rank and self.db.realm.chars[name].rank ~= 0) and ((self.db.profile.show.pvpnum and ("[R".. tonumber(self.db.realm.chars[name].rank)-4 .."]") or self:GetRankName(self.db.realm.chars[name].rank, self.db.realm.chars[name].sex)).." ") or ""
+				local charRank = self.db.realm.chars[name].rank
+				local rank = ""
+				if charRank and charRank >= 5 then
+					if self.db.profile.show.pvpnum then
+						rank = "[R"..(tonumber(charRank) - 4).."] "
+					else
+						local rankName = self:GetRankName(charRank, self.db.realm.chars[name].sex, self.db.realm.chars[name].faction)
+						if rankName and rankName ~= "" then
+							rank = rankName.." "
+						end
+					end
+				end
 				local lastseen = ""
 				if not connected then
-					level = self.db.realm.chars[name].level
-					class = self.db.realm.chars[name].class
-					lastseen = connected and nil or (self.db.realm.chars[name].updated and math.ceil((time() - self.db.realm.chars[name].updated)/86400))
-					if connected and nil or self.db.realm.chars[name].updated then
+					level = self.db.realm.chars[name].level or level or "?"
+					class = self.db.realm.chars[name].class or class or UNKNOWN
+					if self.db.realm.chars[name].updated then
 						local currentTime = time()
 						local minutes = math.ceil((currentTime - self.db.realm.chars[name].updated) / 60)
 						if minutes > 59 then
@@ -368,26 +383,29 @@ function AuldLangSyne:ShowFriends()
 						end
 					end
 				end
+				local classHex = (class and BC:GetHexColor(class)) or "ffffff"
 
 				if self.db.profile.show.compact then
 					-- Right now offline friends that have never been seen by the addon look out of place, for they are not getting munged.  Fix?
 					local pvprank = self.db.realm.chars[name].rank
-					if not pvprank then
+					if not pvprank or pvprank < 5 then
 						pvprank = "?"
 					else
 						pvprank = tonumber(pvprank)-4
 					end
-					local nlt = (connected and "" or "|cff999999")..(self.db.profile.show.color.class and ("|cff"..BC:GetHexColor(class)) or "")..name..(self.db.profile.show.color.class and "|r" or "")..((self.db.profile.show.color.name and self.db.realm.chars[name].sex) and "|r" or "")..(connected and "" or "|cff999999")..(self.db.profile.show.pvp and (" / R"..pvprank) or "")..(self.db.profile.show.clevels and (" / L"..self.db.realm.chars[name].level) or "")..((self.db.profile.show.guild and self.db.realm.chars[name].guild) and (" / "..self.db.realm.chars[name].guild) or "")..(connected and (" / "..area..((status ~= "") and " ("..status..")" or "")) or (lastseen and (" / "..lastseen)))
+					local areaStr = area or ""
+					local statusStr = (status and status ~= "") and (" ("..status..")") or ""
+					local nlt = (connected and "" or "|cff999999")..(self.db.profile.show.color.class and ("|cff"..classHex) or "")..name..(self.db.profile.show.color.class and "|r" or "")..(connected and "" or "|cff999999")..(self.db.profile.show.pvp and (" / R"..pvprank) or "")..(self.db.profile.show.clevels and (" / L"..self.db.realm.chars[name].level) or "")..((self.db.profile.show.guild and self.db.realm.chars[name].guild) and (" / "..self.db.realm.chars[name].guild) or "")..(connected and (" / "..areaStr..statusStr) or ((lastseen ~= "") and (" / "..lastseen) or ""))
 					local it = "|cff999999"..((self.db.realm.chars[name].note and (self.db.realm.chars[name].note ~= "")) and self.db.realm.chars[name].note or "")
 
 					nameLocationText:SetText(nlt)
 					infoText:SetText(it)
 				else
-					local nlt = ((self.db.profile.show.color.name and self.db.realm.chars[name].sex) and ("|cff"..self.colors_sex[self.db.realm.chars[name].sex]) or "")..(self.db.profile.show.pvp and rank or "")..name..((self.db.profile.show.color.name and self.db.realm.chars[name].sex) and "|r" or "")..(connected and "" or ("|cff999999 - "..lastseen..L[" ago"]))
-					local it = race..(self.db.profile.show.color.class and ("|cff"..BC:GetHexColor(class)) or "")..class..(self.db.profile.show.color.class and "|r" or "")..(connected and "" or "|cff999999")..((self.db.profile.show.guild and self.db.realm.chars[name].guild) and (" <"..self.db.realm.chars[name].guild..">") or "")
+					local nlt = ((self.db.profile.show.color.name and self.db.realm.chars[name].sex) and ("|cff"..self.colors_sex[self.db.realm.chars[name].sex]) or "")..(self.db.profile.show.pvp and rank or "")..name..((self.db.profile.show.color.name and self.db.realm.chars[name].sex) and "|r" or "")..(connected and "" or ((lastseen ~= "") and ("|cff999999 - "..lastseen..L[" ago"]) or ""))
+					local it = race..(self.db.profile.show.color.class and ("|cff"..classHex) or "")..(class or UNKNOWN)..(self.db.profile.show.color.class and "|r" or "")..(connected and "" or "|cff999999")..((self.db.profile.show.guild and self.db.realm.chars[name].guild) and (" <"..self.db.realm.chars[name].guild..">") or "")
 
 					if connected then
-						nameLocationText:SetText(format(FRIENDS_LIST_TEMPLATE, nlt, area, status))
+						nameLocationText:SetText(format(FRIENDS_LIST_TEMPLATE, nlt, area or "", status or ""))
 					else
 						nameLocationText:SetText(format(FRIENDS_LIST_OFFLINE_TEMPLATE, nlt))
 					end
@@ -464,6 +482,7 @@ function AuldLangSyne:ScanTooltip(object, unitid)
 
 	if UnitIsPlayer(unitid) then
 		local name = UnitName(unitid)
+		if not name or name == "" or name == UNKNOWNOBJECT then return end
 		if self.db.realm.chars[name] ~= nil then
 			self:Debug("We know",name)
 			self.db.realm.chars[name].rank = UnitPVPRank(unitid)
@@ -478,6 +497,11 @@ function AuldLangSyne:ScanTooltip(object, unitid)
 				self.db.realm.chars[name].sex = MALE
 			elseif sex == 3 then
 				self.db.realm.chars[name].sex = FEMALE
+			end
+
+			local unitFaction = UnitFactionGroup(unitid)
+			if unitFaction then
+				self.db.realm.chars[name].faction = (unitFaction == "Horde") and "0" or "1"
 			end
 
 			local guildName, guildRankName, guildRankIndex = GetGuildInfo(unitid)
@@ -511,6 +535,9 @@ function AuldLangSyne:FillFromPlayerCache(name)
 	-- all -- e.g. offline, never /who'd, never hovered by this character. Both
 	-- the cache itself and the feature detection here are fully optional; this
 	-- is a silent no-op without ClassicAPI, or with it but not opted in.
+	if not name or name == "" then
+		return
+	end
 	if type(C_PlayerCache) ~= "table" or type(C_PlayerCache.GetPlayerInfoByName) ~= "function" then
 		return
 	end
@@ -544,7 +571,7 @@ function AuldLangSyne:ScanWho(i)
 	self:Debug("ScanWho", i)
 	local name, guild, level, race, class, zone, group = self.hooks["GetWhoInfo"](i)
 	self:Debug(name, guild, level, race, class, zone, group)
-	if self.db.realm.chars[name] ~= nil then
+	if name and self.db.realm.chars[name] ~= nil then
 		self:Debug("We know", name)
 		if guild ~= "" then self.db.realm.chars[name].guild = guild end
 		self.db.realm.chars[name].level = level
@@ -585,7 +612,7 @@ end
 function AuldLangSyne:DumpData()
 	self:Debug("Printing friends")
 	for name, info in pairs(self.db.realm.chars) do
-		self:Print((name or info.pvp) .. " [" .. (info.level or "?") .. "]" .. (info.guild and (" <"..info.guild..">") or "") .. ", a " .. (info.race and (info.race.." ") or "") .. (info.class or UNKNOWN) .. " last seen on " .. date(nil, info.updated))
+		self:Print((name or info.pvp) .. " [" .. (info.level or "?") .. "]" .. (info.guild and (" <"..info.guild..">") or "") .. ", a " .. (info.race and (info.race.." ") or "") .. (info.class or UNKNOWN) .. " last seen on " .. (info.updated and date(nil, info.updated) or "unknown"))
 	end
 end
 
@@ -645,6 +672,7 @@ function AuldLangSyne:CreateButton(name, parent, point, relativePoint, x, y)
 end
 
 function AuldLangSyne:ButtonClick(button)
+	if not button.name then return end
 	self:Debug(button:GetName(), button.name)
 	if self.editFrame:IsVisible() and self.editFrame.name == button.name then
 		self.editFrame.name = ""
@@ -669,6 +697,7 @@ function AuldLangSyne:ButtonClick(button)
 end
 
 function AuldLangSyne:ButtonEnter(button)
+	if not button.name then return end
 	self:Debug(button.name, button.type)
 	local note
 	if button.type == "friend" then
@@ -779,9 +808,15 @@ function AuldLangSyne:SaveFriends(slotnum)
 	end
 	for i=1, GetNumFriends() do
 		local name, level, class, area, connected, status = GetFriendInfo(i)
-		table.insert(slot, name)
+		if name then
+			table.insert(slot, name)
+		end
 	end
-	self:Print(format(L["Backed up %d friends to slot %d"], GetNumFriends(),slotnum))
+	if tonumber(slotnum) then
+		self:Print(format(L["Backed up %d friends to slot %d"], GetNumFriends(), tonumber(slotnum)))
+	else
+		self:Print("Backed up " .. GetNumFriends() .. " friends to " .. tostring(slotnum))
+	end
 end
 
 function AuldLangSyne:LoadFriends(slotnum)
@@ -792,7 +827,7 @@ function AuldLangSyne:LoadFriends(slotnum)
 		slot = self.db.char.friends[slotnum]
 	end
 	if table.getn(slot) > 0 then
-		for i=1, GetNumFriends() do
+		for i=GetNumFriends(), 1, -1 do
 			RemoveFriend(i)
 		end
 		for _,name in pairs(slot) do
@@ -803,8 +838,9 @@ function AuldLangSyne:LoadFriends(slotnum)
 	end
 end
 
-function AuldLangSyne:GetRankName(rank, sex)
+function AuldLangSyne:GetRankName(rank, sex, faction)
 	--"rank" should be the number of the PVP rank (starts at 5, goes to 19).
 	--"sex" should be either MALE or FEMALE.
-	return getglobal("PVP_RANK_"..rank.."_"..self.faction..((sex == FEMALE) and "_FEMALE" or ""))
+	if not rank or rank < 5 then return "" end
+	return getglobal("PVP_RANK_"..rank.."_"..(faction or self.faction)..((sex == FEMALE) and "_FEMALE" or "")) or ""
 end
