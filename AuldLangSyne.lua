@@ -401,7 +401,8 @@ function AuldLangSyne:ShowFriends()
 					nameLocationText:SetText(nlt)
 					infoText:SetText(it)
 				else
-					local nlt = ((self.db.profile.show.color.name and self.db.realm.chars[name].sex) and ("|cff"..self.colors_sex[self.db.realm.chars[name].sex]) or "")..(self.db.profile.show.pvp and rank or "")..name..((self.db.profile.show.color.name and self.db.realm.chars[name].sex) and "|r" or "")..(connected and "" or ((lastseen ~= "") and ("|cff999999 - "..lastseen..L[" ago"]) or ""))
+					local sexColor = (self.db.profile.show.color.name and self.db.realm.chars[name].sex) and self.colors_sex[self.db.realm.chars[name].sex] or nil
+					local nlt = (sexColor and ("|cff"..sexColor) or "")..(self.db.profile.show.pvp and rank or "")..name..(sexColor and "|r" or "")..(connected and "" or ((lastseen ~= "") and ("|cff999999 - "..lastseen..L[" ago"]) or ""))
 					local it = race..(self.db.profile.show.color.class and ("|cff"..classHex) or "")..(class or UNKNOWN)..(self.db.profile.show.color.class and "|r" or "")..(connected and "" or "|cff999999")..((self.db.profile.show.guild and self.db.realm.chars[name].guild) and (" <"..self.db.realm.chars[name].guild..">") or "")
 
 					if connected then
@@ -778,6 +779,7 @@ end
 
 function AuldLangSyne:SaveNote(name, note, ntype)
 	--This puts a note into the db, and closes the edit frame if it"s open.
+	if not name or name == "" then return end
 	if note == "" then note = nil end
 	if ntype == "friend" then
 		if not self.db.realm.chars[name] then self.db.realm.chars[name] = {} end
@@ -827,6 +829,9 @@ function AuldLangSyne:LoadFriends(slotnum)
 		slot = self.db.char.friends[slotnum]
 	end
 	if table.getn(slot) > 0 then
+		if slotnum ~= "undo" then
+			self:SaveFriends("undo")
+		end
 		for i=GetNumFriends(), 1, -1 do
 			RemoveFriend(i)
 		end
